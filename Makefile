@@ -8,6 +8,11 @@ LD_FLAGS="-w -X main.version=$(VERSION) -X main.build=$(BUILD) -extldflags=$(EXT
 clean:
 	rm -rf _build/ release/
 
+install:
+	go mod download
+	CGO_ENABLED=0 go build -tags release -ldflags $(LD_FLAGS) -o jenkins-job-cli
+	mv jenkins-job-cli /opt/homebrew/bin/jj
+
 build:
 	go mod download
 	CGO_ENABLED=0 go build -tags release -ldflags $(LD_FLAGS) -o jenkins-job-cli
