@@ -7,22 +7,18 @@ An execution will be like this:
 ![terminal demo](assets/demo.gif)
 
 ## Install
-Fetch the [latest release](https://github.com/gocruncher/jenkins-job-cli/releases) for your platform:
+
+Fetch the [latest release](https://github.com/xiajian2019/jenkins-job-cli/releases) for your platform:
 
 #### Linux
 
 ```bash
-sudo wget https://github.com/gocruncher/jenkins-job-cli/releases/download/v1.1.2/jenkins-job-cli-1.1.2-linux-amd64 -O /usr/local/bin/jj
+sudo wget https://github.com/xiajian2019/jenkins-job-cli/releases/download/v1.1.3/jenkins-job-cli-1.1.3-linux-amd64 -O /usr/local/bin/jj
 sudo chmod +x /usr/local/bin/jj
 ```
 
-#### OS X brew 
-
-```bash
-brew tap gocruncher/tap
-brew install jj
-```
 #### OS X bash
+
 ```bash
 sudo curl -Lo /usr/local/bin/jj https://github.com/gocruncher/jenkins-job-cli/releases/download/v1.1.2/jenkins-job-cli-1.1.2-darwin-amd64
 sudo chmod +x /usr/local/bin/jj
@@ -64,6 +60,7 @@ jj completion check
 ```
 
 ### Examples
+
 ```bash
 # Configure Access to the Jenkins
 jj set dev-jenkins
@@ -76,6 +73,12 @@ jj run -n prod web-build
 
 # makes a specific Jenkins name by default
 jj use PROD  
+
+jj get 
+jj get -n prod
+
+jj builds job-name
+jj builds -v job-name 1
 ```
 
 ## Futures
