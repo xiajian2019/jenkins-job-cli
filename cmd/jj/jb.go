@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"gopkg.in/yaml.v2"
 	"io/ioutil"
 	"log"
 	"net/http"
@@ -14,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"gopkg.in/yaml.v2"
 )
 
 var homeDir string
@@ -310,6 +311,15 @@ func updateCache(env Env, bundle *Bundle) {
 func reqPOST(env Env, method, path string, body []byte) (int, []byte, map[string][]string, error) {
 	return req(env, method, path, body)
 }
+
+func ReqPOST(env Env, method, path string, body []byte) (int, []byte, map[string][]string, error) {
+	return reqPOST(env, method, path, body)
+}
+
+func Req(env Env, method, path string, body []byte) (int, []byte, map[string][]string, error) {
+	return req(env, method, path, body)
+}
+
 func req(env Env, method, path string, body []byte) (int, []byte, map[string][]string, error) {
 	base_url := env.Url
 	if base_url[len(base_url)-1:] != "/" {
