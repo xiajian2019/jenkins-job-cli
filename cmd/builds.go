@@ -4,8 +4,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
+	"github.com/chzyer/readline"
 	"github.com/gocruncher/jenkins-job-cli/cmd/jj"
 	"github.com/spf13/cobra"
 )
@@ -22,7 +24,7 @@ func init() {
 			showBuilds(args, verbose)
 		},
 	}
-	
+
 	buildsCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "显示构建的控制台输出")
 	rootCmd.AddCommand(buildsCmd)
 }
@@ -33,11 +35,61 @@ func showBuilds(args []string, verbose bool) {
 		return
 	}
 
-	jobName := args[0]
 	// Fix: Change the order of return values
 	env := jj.Init(ENV)
 
-	// Fix: Change the order of return values
+	// 获取匹配的任务列表
+	jobs := findMatchingJobs(env, args[0])
+
+	if len(jobs) == 0 {
+		fmt.Printf("未找到匹配的任务: %s\n", args[0])
+		return
+	}
+
+	// 如果完全匹配某个任务名称，直接显示该任务
+	for _, job := range jobs {
+		if job == args[0] {
+			showJobBuilds(env, job, args, verbose)
+			return
+		}
+	}
+
+	// 如果只有一个匹配项，直接显示
+	if len(jobs) == 1 {
+		showJobBuilds(env, jobs[0], args, verbose)
+		return
+	}
+
+	// 多个匹配项，让用户选择
+	fmt.Printf("\n找到 %d 个匹配的任务:\n", len(jobs))
+	for i, job := range jobs {
+		fmt.Printf("%d. %s\n", i+1, job)
+	}
+
+	rl, err := readline.New("\n请选择要查看的任务编号: ")
+	if err != nil {
+		fmt.Printf("读取输入失败: %v\n", err)
+		return
+	}
+	defer rl.Close()
+
+	line, err := rl.Readline()
+	if err != nil {
+		fmt.Printf("读取输入失败: %v\n", err)
+		return
+	}
+
+	index, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || index < 1 || index > len(jobs) {
+		fmt.Println("无效的选择")
+		return
+	}
+
+	showJobBuilds(env, jobs[index-1], args, verbose)
+}
+
+// 新增函数：处理单个任务的构建信息显示
+func showJobBuilds(env jj.Env, jobName string, args []string, verbose bool) {
 	err, jobInfo := jj.GetJobInfo(env, jobName)
 	if err != nil {
 		fmt.Printf("获取任务信息失败: %v\n", err)

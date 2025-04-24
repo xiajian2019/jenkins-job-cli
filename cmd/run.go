@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"html"
+	"regexp"
 )
 
 var usageTamplate = `Usage:{{if .Runnable}}
@@ -61,10 +63,62 @@ func init() {
 		Aliases: []string{"r"},
 		Short:   "Run the specified jenkins job",
 		Run: func(cmd *cobra.Command, args []string) {
-			runJob(args[0])
+			if len(args) == 0 {
+				fmt.Println("请指定要运行的 Jenkins 任务名称")
+				return
+			}
+			
+			// 获取匹配的任务列表
+			env := jj.Init(ENV)
+			jobs := findMatchingJobs(env, args[0])
+			
+			if len(jobs) == 0 {
+				fmt.Printf("未找到匹配的任务: %s\n", args[0])
+				return
+			}
+			
+			// 如果完全匹配某个任务名称，直接运行该任务
+			for _, job := range jobs {
+				if job == args[0] {
+					runJob(job)
+					return
+				}
+			}
+			
+			// 如果只有一个匹配项，直接运行
+			if len(jobs) == 1 {
+				runJob(jobs[0])
+				return
+			}
+			
+			// 多个匹配项，让用户选择
+			fmt.Printf("\n找到 %d 个匹配的任务:\n", len(jobs))
+			for i, job := range jobs {
+				fmt.Printf("%d. %s\n", i+1, job)
+			}
+			
+			rl, err := readline.New("\n请选择要运行的任务编号: ")
+			if err != nil {
+				fmt.Printf("读取输入失败: %v\n", err)
+				return
+			}
+			defer rl.Close()
+			
+			line, err := rl.Readline()
+			if err != nil {
+				fmt.Printf("读取输入失败: %v\n", err)
+				return
+			}
+			
+			index, err := strconv.Atoi(strings.TrimSpace(line))
+			if err != nil || index < 1 || index > len(jobs) {
+				fmt.Println("无效的选择")
+				return
+			}
+			
+			runJob(jobs[index-1])
 		},
-
-		Args:         cobra.ExactArgs(1),
+		Args:         cobra.MaximumNArgs(1),
 		PreRunE:      runPreRunE,
 		SilenceUsage: false,
 	}
@@ -338,10 +392,15 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 	}()
 
 	handle := func(cursor string, sleepTime int) string {
+		// 修改 Console API 调用，添加 text 参数来获取纯文本输出
 		output, nextCursor, err := jj.Console(env, name, number, cursor)
 		if err != nil || cursor == nextCursor {
 			return cursor
 		}
+		
+		// 添加简单的 HTML 标签过滤
+		output = stripHTMLTags(output)
+		
 		lines := strings.Split(output, "\n")
 		count := len(lines)
 		if count > 50 {
@@ -585,4 +644,47 @@ func check(err error) {
 		fmt.Printf("\nError: %s\n", err.Error())
 		os.Exit(1)
 	}
+}
+
+// 查找匹配的任务
+func findMatchingJobs(env jj.Env, pattern string) []string {
+    matchedJobs := make(map[string]struct{}) // 使用 map 来去重
+    bundle := jj.GetBundle(env)
+    
+    for _, view := range bundle.Views {
+        for _, job := range view.Jobs {
+            if strings.Contains(strings.ToLower(job.Name), strings.ToLower(pattern)) {
+                matchedJobs[job.Name] = struct{}{} // 使用 map 自动去重
+            }
+        }
+    }
+    
+    // 转换回切片
+    result := make([]string, 0, len(matchedJobs))
+    for jobName := range matchedJobs {
+        result = append(result, jobName)
+    }
+    
+    return result
+}
+
+// 添加一个辅助函数来去除 HTML 标签
+func stripHTMLTags(text string) string {
+    // 移除 HTML 标签
+    re := regexp.MustCompile("<[^>]*>")
+    text = re.ReplaceAllString(text, "")
+    
+    // 解码 HTML 实体
+    text = html.UnescapeString(text)
+    
+    // 移除多余的空行
+    lines := strings.Split(text, "\n")
+    var result []string
+    for _, line := range lines {
+        if strings.TrimSpace(line) != "" {
+            result = append(result, line)
+        }
+    }
+    
+    return strings.Join(result, "\n")
 }
