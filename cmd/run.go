@@ -6,6 +6,7 @@ import (
 	"html"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"regexp"
 	"strconv"
@@ -358,6 +359,7 @@ func barHandler(jobUrl string, keyCh chan string, chMsg chan string, finishCh ch
 	}
 }
 
+// 在watchTheJob函数中添加部署后检查
 func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 	jobUrl := env.Url + "/job/" + name + "/" + strconv.Itoa(number) + "/console"
 	lastBuild, _ := jj.GetLastSuccessfulBuildInfo(env, name)
@@ -492,6 +494,16 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 						}
 						cursor = nc
 					}
+					
+					// 任务成功完成后检查K8s部署状态
+					// 这里的逻辑要改一下
+					if strings.Contains(strings.ToLower(name), "deploy") || 
+					   strings.Contains(strings.ToLower(name), "k8s") ||
+					   strings.Contains(strings.ToLower(name), "kubernetes") {
+						fmt.Println("\n🔍 检查Kubernetes部署状态...")
+						checkK8sDeployment(name)
+					}
+					
 					finishCh <- struct {
 						err    error
 						result string
@@ -714,4 +726,122 @@ func stripHTMLTags(text string) string {
 	}
 
 	return strings.Join(result, "\n")
+}
+
+// 根据Jenkins任务名称提取Kubernetes部署名称
+func extractDeploymentName(jobName string) string {
+	// 移除常见的Jenkins任务前缀和后缀
+	deploymentName := strings.ToLower(jobName)
+	
+	// 移除常见的前缀
+	prefixes := []string{
+		"deploy-", "deployment-", "k8s-", "kubernetes-", 
+		"build-", "ci-", "cd-", "pipeline-", "job-",
+	}
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(deploymentName, prefix) {
+			deploymentName = strings.TrimPrefix(deploymentName, prefix)
+			break
+		}
+	}
+	
+	// 移除常见的后缀
+	suffixes := []string{
+		"-deploy", "-deployment", "-k8s", "-kubernetes", 
+		"-build", "-ci", "-cd", "-pipeline",
+		"-prod", "-production", "-staging", "-dev", "-development",
+		"-test", "-testing", "-uat",
+	}
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(deploymentName, suffix) {
+			deploymentName = strings.TrimSuffix(deploymentName, suffix)
+			break
+		}
+	}
+	
+	// 替换不符合Kubernetes命名规范的字符
+	// Kubernetes资源名称只能包含小写字母、数字和连字符
+	deploymentName = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(deploymentName, "-")
+	
+	// 移除开头和结尾的连字符
+	deploymentName = strings.Trim(deploymentName, "-")
+	
+	// 如果处理后的名称为空，使用原始名称的简化版本
+	if deploymentName == "" {
+		deploymentName = regexp.MustCompile(`[^a-zA-Z0-9-]`).ReplaceAllString(strings.ToLower(jobName), "-")
+		deploymentName = strings.Trim(deploymentName, "-")
+	}
+	
+	// 确保名称不为空
+	if deploymentName == "" {
+		deploymentName = "app"
+	}
+	
+	return deploymentName
+}
+
+func checkK8sDeployment(jobName string) {
+	// 根据任务名称推断部署名称
+	deploymentName := extractDeploymentName(jobName)
+	
+	fmt.Printf("🔍 检查部署: %s (从任务名 %s 推断)\n", deploymentName, jobName)
+	
+	// 检查部署状态
+	cmd := exec.Command("kubectl", "rollout", "status", 
+		fmt.Sprintf("deployment/%s", deploymentName),
+		"--timeout=60s")
+	
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		fmt.Printf("⚠️  部署状态检查失败: %v\n", err)
+		fmt.Printf("输出: %s\n", output)
+		
+		// 尝试检查Pod状态作为备选方案
+		fmt.Printf("🔄 尝试检查Pod状态...\n")
+		checkPodStatus(deploymentName)
+		return
+	}
+	
+	fmt.Printf("✅ 部署状态: %s\n", strings.TrimSpace(string(output)))
+	
+	// 获取Pod详细状态
+	checkPodStatus(deploymentName)
+}
+
+func checkPodStatus(deploymentName string) {
+	cmd := exec.Command("kubectl", "get", "pods", 
+		"-l", fmt.Sprintf("app=%s", deploymentName),
+		"-o", "wide")
+	
+	output, err := cmd.Output()
+	if err != nil {
+		fmt.Printf("❌ 无法获取Pod状态: %v\n", err)
+		
+		// 尝试其他常见的标签选择器
+		alternativeLabels := []string{
+			fmt.Sprintf("app.kubernetes.io/name=%s", deploymentName),
+			fmt.Sprintf("name=%s", deploymentName),
+			fmt.Sprintf("service=%s", deploymentName),
+		}
+		
+		for _, label := range alternativeLabels {
+			fmt.Printf("🔄 尝试标签: %s\n", label)
+			cmd = exec.Command("kubectl", "get", "pods", "-l", label, "-o", "wide")
+			output, err = cmd.Output()
+			if err == nil && len(strings.TrimSpace(string(output))) > 0 {
+				fmt.Printf("📊 Pod状态 (标签: %s):\n%s\n", label, output)
+				return
+			}
+		}
+		
+		fmt.Printf("💡 提示: 请检查部署名称是否正确，或者Pod是否使用了不同的标签\n")
+		return
+	}
+	
+	if len(strings.TrimSpace(string(output))) == 0 {
+		fmt.Printf("⚠️  未找到匹配的Pod (标签: app=%s)\n", deploymentName)
+		return
+	}
+	
+	fmt.Printf("📊 Pod状态:\n%s\n", output)
 }
