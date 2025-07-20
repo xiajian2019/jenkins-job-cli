@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/chzyer/readline"
@@ -736,7 +737,7 @@ func extractDeploymentName(jobName string) string {
 	// 移除常见的前缀
 	prefixes := []string{
 		"deploy-", "deployment-", "k8s-", "kubernetes-", 
-		"build-", "ci-", "cd-", "pipeline-", "job-",
+		"build-", "ci-", "cd-", "pipeline-", "job-", "rc-",
 	}
 	for _, prefix := range prefixes {
 		if strings.HasPrefix(deploymentName, prefix) {
@@ -772,11 +773,6 @@ func extractDeploymentName(jobName string) string {
 		deploymentName = strings.Trim(deploymentName, "-")
 	}
 	
-	// 确保名称不为空
-	if deploymentName == "" {
-		deploymentName = "app"
-	}
-	
 	return deploymentName
 }
 
@@ -785,63 +781,246 @@ func checkK8sDeployment(jobName string) {
 	deploymentName := extractDeploymentName(jobName)
 	
 	fmt.Printf("🔍 检查部署: %s (从任务名 %s 推断)\n", deploymentName, jobName)
-	
-	// 检查部署状态
-	cmd := exec.Command("kubectl", "rollout", "status", 
-		fmt.Sprintf("deployment/%s", deploymentName),
-		"--timeout=60s")
-	
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		fmt.Printf("⚠️  部署状态检查失败: %v\n", err)
-		fmt.Printf("输出: %s\n", output)
-		
-		// 尝试检查Pod状态作为备选方案
-		fmt.Printf("🔄 尝试检查Pod状态...\n")
-		checkPodStatus(deploymentName)
+	if deploymentName == "" {
+		fmt.Println("未推断到部署名称")
 		return
 	}
-	
-	fmt.Printf("✅ 部署状态: %s\n", strings.TrimSpace(string(output)))
-	
-	// 获取Pod详细状态
-	checkPodStatus(deploymentName)
+
+	fmt.Printf("⏱️  将监控100秒后自动退出 (按 Ctrl+C 可提前退出)\n\n")
+		
+	// 使用 k8s.go 中的监控逻辑，添加超时和中断支持
+	checkK8sDeploymentWithTimeout(deploymentName, "default", 100*time.Second)
 }
 
-func checkPodStatus(deploymentName string) {
-	cmd := exec.Command("kubectl", "get", "pods", 
-		"-l", fmt.Sprintf("app=%s", deploymentName),
-		"-o", "wide")
+// 带超时和中断支持的K8s部署检查
+func checkK8sDeploymentWithTimeout(deploymentName, namespace string, timeout time.Duration) {
+	// 设置信号处理，捕获 Ctrl+C
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	
+	// 创建超时定时器
+	timeoutTimer := time.NewTimer(timeout)
+	defer timeoutTimer.Stop()
+	
+	// 创建停止通道
+	stopChan := make(chan bool)
+	
+	// 启动信号监听协程
+	go func() {
+		<-c
+		fmt.Printf("\n\n👋 收到退出信号，停止检查...\n")
+		stopChan <- true
+	}()
+	
+	// 启动超时监听协程
+	go func() {
+		<-timeoutTimer.C
+		fmt.Printf("\n\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
+		stopChan <- true
+	}()
+	
+	// 首先尝试找到匹配的Pod
+	matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
+	
+	if len(matchedPods) == 0 {
+		fmt.Printf("⚠️  未找到匹配的Pod，尝试使用标签选择器: app=%s\n", deploymentName)
+		// 使用标签选择器进行监控
+		watchPodStatusWithTimeout(namespace, fmt.Sprintf("app=%s", deploymentName), stopChan)
+	} else {
+		fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
+		// 监控特定的Pod
+		watchSpecificPodsWithTimeout(matchedPods, namespace, stopChan)
+	}
+}
+
+// 为部署查找匹配的Pod
+func findMatchingPodsForDeployment(deploymentName, namespace string) []string {
+	// 获取所有Pod
+	cmd := exec.Command("kubectl", "get", "pods", "-n", namespace, "--no-headers", "-o", "custom-columns=NAME:.metadata.name")
 	output, err := cmd.Output()
 	if err != nil {
-		fmt.Printf("❌ 无法获取Pod状态: %v\n", err)
-		
-		// 尝试其他常见的标签选择器
-		alternativeLabels := []string{
-			fmt.Sprintf("app.kubernetes.io/name=%s", deploymentName),
-			fmt.Sprintf("name=%s", deploymentName),
-			fmt.Sprintf("service=%s", deploymentName),
+		return nil
+	}
+
+	allPods := strings.Split(strings.TrimSpace(string(output)), "\n")
+	var matchedPods []string
+
+	deploymentPattern := strings.ToLower(deploymentName)
+	for _, pod := range allPods {
+		if pod == "" {
+			continue
 		}
-		
-		for _, label := range alternativeLabels {
-			fmt.Printf("🔄 尝试标签: %s\n", label)
-			cmd = exec.Command("kubectl", "get", "pods", "-l", label, "-o", "wide")
-			output, err = cmd.Output()
-			if err == nil && len(strings.TrimSpace(string(output))) > 0 {
-				fmt.Printf("📊 Pod状态 (标签: %s):\n%s\n", label, output)
+		if strings.Contains(strings.ToLower(pod), deploymentPattern) {
+			matchedPods = append(matchedPods, pod)
+		}
+	}
+
+	return matchedPods
+}
+
+// 带停止通道的Pod状态监控 (使用标签选择器)
+func watchPodStatusWithTimeout(namespace, labelSelector string, stopChan chan bool) {
+	fmt.Printf("👀 监控Pod状态 (命名空间: %s, 标签: %s)\n", namespace, labelSelector)
+	
+	for {
+		select {
+		case <-stopChan:
+			return
+		default:
+			fmt.Printf("⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
+
+			args := []string{"get", "pods"}
+			if labelSelector != "" {
+				args = append(args, "-l", labelSelector)
+			}
+			args = append(args, "-n", namespace, "--no-headers")
+
+			cmd := exec.Command("kubectl", args...)
+			output, err := cmd.Output()
+			if err != nil {
+				fmt.Printf("❌ 监控失败: %v\n", err)
+				time.Sleep(5 * time.Second)
+				continue
+			}
+
+			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+			if len(lines) == 0 || lines[0] == "" {
+				fmt.Printf("⚠️  未找到匹配的Pod\n")
+				// 尝试其他标签选择器
+				if tryAlternativeSelectorsForDeployment(namespace, labelSelector, stopChan) {
+					return
+				}
+			} else {
+				runningCount := 0
+				totalCount := 0
+
+				for _, line := range lines {
+					if line == "" {
+						continue
+					}
+					totalCount++
+					fields := strings.Fields(line)
+					if len(fields) >= 3 {
+						podName := fields[0]
+						ready := fields[1]
+						status := fields[2]
+
+						if status == "Running" && strings.Contains(ready, "/") {
+							readyParts := strings.Split(ready, "/")
+							if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
+								runningCount++
+								fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
+							} else {
+								fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
+							}
+						} else {
+							fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
+						}
+					}
+				}
+
+				fmt.Printf("📊 总计: %d/%d Pod运行正常\n", runningCount, totalCount)
+
+				if runningCount == totalCount && totalCount > 0 {
+					fmt.Printf("🎉 所有Pod都已正常运行！\n")
+					fmt.Printf("✅ 部署检查完成\n")
+					return
+				}
+			}
+
+			fmt.Printf(strings.Repeat("-", 50) + "\n")
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+// 带停止通道的特定Pod监控
+func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan chan bool) {
+	fmt.Printf("👀 监控特定Pod: %s (命名空间: %s)\n", strings.Join(podNames, ", "), namespace)
+
+	for {
+		select {
+		case <-stopChan:
+			return
+		default:
+			fmt.Printf("⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
+
+			runningCount := 0
+			totalCount := len(podNames)
+
+			for _, podName := range podNames {
+				cmd := exec.Command("kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
+				output, err := cmd.Output()
+				if err != nil {
+					fmt.Printf("❌ %s: 获取状态失败 - %v\n", podName, err)
+					continue
+				}
+
+				line := strings.TrimSpace(string(output))
+				if line == "" {
+					fmt.Printf("⚠️  %s: Pod不存在\n", podName)
+					continue
+				}
+
+				fields := strings.Fields(line)
+				if len(fields) >= 3 {
+					ready := fields[1]
+					status := fields[2]
+
+					if status == "Running" && strings.Contains(ready, "/") {
+						readyParts := strings.Split(ready, "/")
+						if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
+							runningCount++
+							fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
+						} else {
+							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
+						}
+					} else {
+						fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
+					}
+				}
+			}
+
+			fmt.Printf("📊 总计: %d/%d Pod运行正常\n", runningCount, totalCount)
+
+			if runningCount == totalCount && totalCount > 0 {
+				fmt.Printf("🎉 所有Pod都已正常运行！\n")
+				fmt.Printf("✅ 部署检查完成\n")
 				return
 			}
+
+			fmt.Printf(strings.Repeat("-", 50) + "\n")
+			time.Sleep(5 * time.Second)
 		}
-		
-		fmt.Printf("💡 提示: 请检查部署名称是否正确，或者Pod是否使用了不同的标签\n")
-		return
+	}
+}
+
+// 尝试其他标签选择器
+func tryAlternativeSelectorsForDeployment(namespace, originalSelector string, stopChan chan bool) bool {
+	deploymentName := strings.TrimPrefix(originalSelector, "app=")
+	alternatives := []string{
+		fmt.Sprintf("app.kubernetes.io/name=%s", deploymentName),
+		fmt.Sprintf("name=%s", deploymentName),
+		fmt.Sprintf("service=%s", deploymentName),
+		fmt.Sprintf("component=%s", deploymentName),
+	}
+
+	fmt.Printf("🔄 尝试其他标签选择器...\n")
+	for _, alt := range alternatives {
+		select {
+		case <-stopChan:
+			return true
+		default:
+			cmd := exec.Command("kubectl", "get", "pods", "-l", alt, "-n", namespace, "--no-headers")
+			output, err := cmd.Output()
+			if err == nil && len(strings.TrimSpace(string(output))) > 0 {
+				fmt.Printf("✅ 找到匹配的Pod (标签: %s)\n", alt)
+				watchPodStatusWithTimeout(namespace, alt, stopChan)
+				return true
+			}
+		}
 	}
 	
-	if len(strings.TrimSpace(string(output))) == 0 {
-		fmt.Printf("⚠️  未找到匹配的Pod (标签: app=%s)\n", deploymentName)
-		return
-	}
-	
-	fmt.Printf("📊 Pod状态:\n%s\n", output)
+	fmt.Printf("❌ 未找到匹配的Pod，请检查部署名称或标签\n")
+	return false
 }
