@@ -29,6 +29,8 @@ func init() {
     var follow bool
     var detailed bool
     var simple bool
+    // 在 init 函数中的变量声明部分添加
+    var execContainer bool
 
     podsCmd := &cobra.Command{
         Use:   "pods [app-name]",
@@ -43,9 +45,10 @@ func init() {
   jj k8s pods myapp --logs       # 查看Pod最近100行日志并实时追踪
   jj k8s pods myapp --logs --no-follow  # 仅查看最近100行日志，不追踪
   jj k8s pods myapp -d           # 显示详细信息
+  jj k8s pods myapp -e           # 进入容器交互式终端
   jj k8s pods myapp -s           # 简洁模式 (仅显示基本状态)`,
         Run: func(cmd *cobra.Command, args []string) {
-            showPodStatus(args, namespace, selector, watch, showLogs, follow, detailed, simple)
+            showPodStatus(args, namespace, selector, watch, showLogs, follow, detailed, simple, execContainer)
         },
     }
 
@@ -57,12 +60,15 @@ func init() {
     podsCmd.Flags().BoolVar(&follow, "no-follow", false, "禁用实时追踪日志 (仅在--logs时有效)")
     podsCmd.Flags().BoolVarP(&detailed, "detailed", "d", false, "显示Pod详细信息")
     podsCmd.Flags().BoolVarP(&simple, "simple", "s", false, "简洁模式，仅显示基本状态")
+    // 在 podsCmd 的 flags 部分添加
+    podsCmd.Flags().BoolVarP(&execContainer, "exec", "e", false, "进入容器交互式终端")
 
     k8sCmd.AddCommand(podsCmd)
     rootCmd.AddCommand(k8sCmd)
 }
 
-func showPodStatus(args []string, namespace, selector string, watch, showLogs, noFollow, detailed, simple bool) {
+// 在 showPodStatus 函数中添加 execContainer 参数
+func showPodStatus(args []string, namespace, selector string, watch, showLogs, noFollow, detailed, simple, execContainer bool) {
     var labelSelector string
     var selectedPods []string
 
@@ -121,6 +127,18 @@ func showPodStatus(args []string, namespace, selector string, watch, showLogs, n
             // 默认模式：显示基本信息，不显示详细信息
             getPodStatusDetailed(namespace, labelSelector, false)
         }
+    }
+
+    if execContainer {
+        if len(selectedPods) > 0 {
+            execPodContainer(selectedPods[0], namespace)
+        } else if len(args) > 0 {
+            // 如果没有匹配的Pod，尝试直接使用输入的名称
+            execPodContainer(args[0], namespace)
+        } else {
+            fmt.Println("❌ 请指定要进入的Pod名称")
+        }
+        return
     }
 }
 
@@ -221,17 +239,7 @@ func showSinglePodDetails(podName, namespace string) {
     // 提取关键信息
     lines := strings.Split(string(output), "\n")
     for _, line := range lines {
-        line = strings.TrimSpace(line)
-        if strings.HasPrefix(line, "Status:") ||
-            strings.HasPrefix(line, "Ready:") ||
-            strings.HasPrefix(line, "Restarts:") ||
-            strings.HasPrefix(line, "Age:") ||
-            strings.HasPrefix(line, "Node:") ||
-            strings.HasPrefix(line, "IP:") ||
-            strings.Contains(line, "Warning") ||
-            strings.Contains(line, "Error") {
-            fmt.Printf("  %s\n", line)
-        }
+        fmt.Printf("%s\n", line)
     }
 }
 
@@ -593,4 +601,33 @@ func showPodLogs(args []string, namespace, labelSelector string, follow bool) {
     }
 
     showPodLogsByName(podName, namespace, follow)
+}
+
+// 添加新函数：进入Pod容器
+func execPodContainer(podName, namespace string) {
+    // 检查Pod是否存在且运行正常
+    cmd := exec.Command("kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
+    output, err := cmd.Output()
+    if err != nil {
+        fmt.Printf("❌ Pod %s 不存在或无法访问\n", podName)
+        return
+    }
+
+    // 检查Pod状态
+    fields := strings.Fields(string(output))
+    if len(fields) < 3 || fields[2] != "Running" {
+        fmt.Printf("❌ Pod %s 未在运行状态 (当前状态: %s)\n", podName, fields[2])
+        return
+    }
+
+    fmt.Printf("✅ 正在进入 Pod %s...\n", podName)
+
+    // 准备进入容器的命令
+    execCmd := exec.Command( "kubectl", "exec", "-it", "-n", namespace, podName, "--", "/bin/sh")
+    
+    // 设置标准输入输出 - 交还终端执行逻辑 
+    execCmd.Stdin = os.Stdin
+    execCmd.Stdout = os.Stdout
+    execCmd.Stderr = os.Stderr
+    execCmd.Run()
 }

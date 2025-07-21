@@ -92,6 +92,7 @@ jj k8s pods myapp -w           # 实时监控Pod状态
 jj k8s pods myapp --logs       # 查看Pod最近100行日志并实时追踪
 jj k8s pods myapp --logs --no-follow  # 仅查看最近100行日志，不追踪
 jj k8s pods myapp -d           # 显示详细信息
+jj k8s pods myapp -e           # 进入容器中
 jj k8s pods myapp -s           # 简洁模式 (仅显示基本状态)`
 ```
 
