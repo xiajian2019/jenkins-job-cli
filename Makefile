@@ -33,11 +33,12 @@ build-all:
 image:
 	docker build -t jenkins-job-cli -f Dockerfile .
 
-release:
+release: build-all
 	rm -rf release
 	mkdir release
 	cp _build/* release
 	cd release; sha256sum --quiet --check sha256sums.txt
+	git tag v$(VERSION) && git push origin v$(VERSION)
 	ghr v$(VERSION) release
 
 .PHONY: build
