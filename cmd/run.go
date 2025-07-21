@@ -497,13 +497,8 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 					}
 					
 					// 任务成功完成后检查K8s部署状态
-					// 这里的逻辑要改一下
-					if strings.Contains(strings.ToLower(name), "deploy") || 
-					   strings.Contains(strings.ToLower(name), "k8s") ||
-					   strings.Contains(strings.ToLower(name), "kubernetes") {
-						fmt.Println("\n🔍 检查Kubernetes部署状态...")
-						checkK8sDeployment(name)
-					}
+					fmt.Println("\n🔍 检查Kubernetes部署状态...")
+					checkK8sDeployment(name)
 					
 					finishCh <- struct {
 						err    error
