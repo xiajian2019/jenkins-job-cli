@@ -263,7 +263,6 @@ func watchSpecificPods(podNames []string, namespace string) {
             fmt.Printf("\r⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
 
             runningCount := 0
-            totalCount := len(podNames)
 
             for _, podName := range podNames {
                 cmd := exec.Command("kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
@@ -296,13 +295,6 @@ func watchSpecificPods(podNames []string, namespace string) {
                         fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
                     }
                 }
-            }
-
-            fmt.Printf("\n📊 总计: %d/%d Pod运行正常\n", runningCount, totalCount)
-
-            if runningCount == totalCount && totalCount > 0 {
-                fmt.Printf("🎉 所有Pod都已正常运行！\n")
-                // 继续监控，不退出
             }
 
             fmt.Printf("\n" + strings.Repeat("-", 50) + "\n")
@@ -538,14 +530,10 @@ func watchPodStatus(namespace, labelSelector string) {
             if len(lines) == 0 || lines[0] == "" {
                 fmt.Printf("⚠️  未找到匹配的Pod\n")
             } else {
-                runningCount := 0
-                totalCount := 0
-
                 for _, line := range lines {
                     if line == "" {
                         continue
                     }
-                    totalCount++
                     fields := strings.Fields(line)
                     if len(fields) >= 3 {
                         podName := fields[0]
@@ -555,7 +543,6 @@ func watchPodStatus(namespace, labelSelector string) {
                         if status == "Running" && strings.Contains(ready, "/") {
                             readyParts := strings.Split(ready, "/")
                             if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
-                                runningCount++
                                 fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
                             } else {
                                 fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
@@ -565,16 +552,8 @@ func watchPodStatus(namespace, labelSelector string) {
                         }
                     }
                 }
-
-                fmt.Printf("\n📊 总计: %d/%d Pod运行正常\n", runningCount, totalCount)
-
-                if runningCount == totalCount && totalCount > 0 {
-                    fmt.Printf("🎉 所有Pod都已正常运行！\n")
-                    // 继续监控，不退出
-                }
             }
 
-            fmt.Printf("\n" + strings.Repeat("-", 50) + "\n")
             time.Sleep(5 * time.Second)
         }
     }

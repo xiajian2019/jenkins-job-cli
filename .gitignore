@@ -9,4 +9,4 @@ jenkins-job-cli
 /_build/
 
 upload_zjk.sh
-
+local_install.sh
