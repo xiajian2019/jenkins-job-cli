@@ -21,6 +21,7 @@ build-dev:
 	go build -ldflags "-w -X main.version=$(VERSION)-dev -X main.build=$(BUILD) -extldflags=$(EXT_LD_FLAGS)"
 
 build-all:
+	rm -rf _build
 	mkdir -p _build
 	GOOS=darwin  GOARCH=amd64 go build -tags release -ldflags $(LD_FLAGS) -o _build/jenkins-job-cli-$(VERSION)-darwin-amd64
 	GOOS=darwin  GOARCH=arm64 go build -tags release -ldflags $(LD_FLAGS) -o _build/jenkins-job-cli-$(VERSION)-darwin-arm64
