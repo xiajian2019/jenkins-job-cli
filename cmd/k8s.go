@@ -40,10 +40,9 @@ func init() {
 示例:
   jj k8s pods                    # 查看所有Pod (简洁模式)
   jj k8s pods myapp              # 模糊匹配包含myapp的Pod，支持选择
-  jj k8s pods -l service=web     # 使用自定义标签选择器
   jj k8s pods myapp -w           # 实时监控Pod状态
-  jj k8s pods myapp --logs       # 查看Pod最近100行日志并实时追踪
-  jj k8s pods myapp --logs --no-follow  # 仅查看最近100行日志，不追踪
+  jj k8s pods myapp -l       # 查看Pod最近100行日志并实时追踪
+  jj k8s pods myapp -l --no-follow  # 仅查看最近100行日志，不追踪
   jj k8s pods myapp -d           # 显示详细信息
   jj k8s pods myapp -e           # 进入容器交互式终端
   jj k8s pods myapp -s           # 简洁模式 (仅显示基本状态)`,
@@ -54,9 +53,8 @@ func init() {
 
     // 为pods命令添加参数
     podsCmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Kubernetes命名空间")
-    podsCmd.Flags().StringVarP(&selector, "selector", "l", "", "标签选择器 (例如: app=myapp,version=v1)")
     podsCmd.Flags().BoolVarP(&watch, "watch", "w", false, "实时监控Pod状态变化")
-    podsCmd.Flags().BoolVar(&showLogs, "logs", false, "显示Pod日志 (默认最近100行并实时追踪)")
+    podsCmd.Flags().BoolVarP(&showLogs, "log", "l",false, "显示Pod日志 (默认最近100行并实时追踪)")
     podsCmd.Flags().BoolVar(&follow, "no-follow", false, "禁用实时追踪日志 (仅在--logs时有效)")
     podsCmd.Flags().BoolVarP(&detailed, "detailed", "d", false, "显示Pod详细信息")
     podsCmd.Flags().BoolVarP(&simple, "simple", "s", false, "简洁模式，仅显示基本状态")
