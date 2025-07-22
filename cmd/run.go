@@ -376,6 +376,7 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 		err    error
 		result string
 	})
+	needWatchDeployStatus := true
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go barHandler(jobUrl, keyCh, chMsg, finishCh, &wg)
@@ -433,6 +434,11 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 				}
 
 				trimmedLine := strings.TrimSpace(fline)
+				// 如果 trimmedLine 中包含 front， front-boohee 或者 yarn 或者 npm 或者 pnpm 则不需要检查部署状态
+				if strings.Contains(trimmedLine, "front") || strings.Contains(trimmedLine, "front-boohee") || strings.Contains(trimmedLine, "yarn") || strings.Contains(trimmedLine, "front/asset/") || strings.Contains(trimmedLine, "front/chunkScript") || strings.Contains(trimmedLine, "Webpack") {
+					needWatchDeployStatus = false
+				}
+
 				if len(trimmedLine) > 0 && !seenLines[trimmedLine] {
 					seenLines[trimmedLine] = true
 					displayLines = append(displayLines, fline)
@@ -500,9 +506,11 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 						result string
 					}{nil, curBuild.Result}
 
-					// 任务成功完成后检查K8s部署状态
-					fmt.Println("\n🔍 检查Kubernetes部署状态...")
-					checkK8sDeployment(name)
+					if needWatchDeployStatus {
+						// 任务成功完成后检查K8s部署状态
+						fmt.Println("\n🔍 检查Kubernetes部署状态...")
+						checkK8sDeployment(name)
+					}
 					return nil
 				} else {
 					err := errors.New("failed")
@@ -837,8 +845,15 @@ func checkK8sDeploymentWithContext(deploymentName, namespace string, timeout tim
 	// 启动Pod监控协程
 	go func() {
 		matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
-		fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
-		watchSpecificPodsWithContext(ctx, cancel, matchedPods, namespace)
+
+		if len(matchedPods) == 0 {
+			fmt.Printf("⚠️ 未找到匹配的Pod: %s\n", deploymentName)
+			cancel()
+			return
+		} else {
+			fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
+			watchSpecificPodsWithContext(ctx, cancel, matchedPods, namespace)
+		}
 	}()
 
 	// 主协程等待上下文结束
