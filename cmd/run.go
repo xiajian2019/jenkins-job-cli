@@ -338,7 +338,6 @@ func barHandler(jobUrl string, keyCh chan string, chMsg chan string, finishCh ch
 					br.SetLines(br.GetLines() + 1)
 					barMutex.Unlock()
 				}
-
 			}
 			if info.err == nil {
 				fmt.Printf("\r%s", strings.Repeat(" ", int(50)-1))
@@ -356,7 +355,6 @@ func barHandler(jobUrl string, keyCh chan string, chMsg chan string, finishCh ch
 		case <-closeCh:
 			return
 		}
-
 	}
 }
 
@@ -470,7 +468,7 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 	for {
 		curBuild, err := jj.GetBuildInfo(env, name, number)
 		if err != nil {
-			if getTime()-stime > int64(30*time.Millisecond) {
+			if getTime()-stime > int64(60*time.Millisecond) {
 				err := errors.New("failed")
 				finishCh <- struct {
 					err    error
@@ -496,14 +494,14 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 						cursor = nc
 					}
 					
-					// 任务成功完成后检查K8s部署状态
-					fmt.Println("\n🔍 检查Kubernetes部署状态...")
-					checkK8sDeployment(name)
-					
 					finishCh <- struct {
 						err    error
 						result string
 					}{nil, curBuild.Result}
+
+					// 任务成功完成后检查K8s部署状态
+					fmt.Println("\n🔍 检查Kubernetes部署状态...")
+					checkK8sDeployment(name)
 					return nil
 				} else {
 					err := errors.New("failed")
@@ -799,6 +797,17 @@ func checkK8sDeploymentWithTimeout(deploymentName, namespace string, timeout tim
 	
 	// 创建停止通道
 	stopChan := make(chan bool)
+		// 创建成功通道
+	successChan := make(chan bool)
+
+	// 确保在函数结束时关闭所有通道
+	defer func() {
+		signal.Stop(c) // 停止信号通知
+		close(c)       // 关闭信号通道
+		close(stopChan)  // 关闭停止通道
+		close(successChan) // 关闭成功通道
+	}()
+
 	
 	// 启动信号监听协程
 	go func() {
@@ -809,18 +818,22 @@ func checkK8sDeploymentWithTimeout(deploymentName, namespace string, timeout tim
 	
 	// 启动超时监听协程
 	go func() {
-		<-timeoutTimer.C
-		fmt.Printf("\n\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
-		stopChan <- true
+		select {
+		case <-timeoutTimer.C:
+			fmt.Printf("\n\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
+			stopChan <- true
+		case <-successChan:
+			// 如果成功了，就不需要发送超时信号
+			return
+		}
 	}()
 	
 	// 首先尝试找到匹配的Pod
 	matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
-	
 
 	fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
 		// 监控特定的Pod
-	watchSpecificPodsWithTimeout(matchedPods, namespace, stopChan)
+	watchSpecificPodsWithTimeout(matchedPods, namespace, stopChan, successChan)
 }
 
 // 为部署查找匹配的Pod
@@ -850,7 +863,7 @@ func findMatchingPodsForDeployment(deploymentName, namespace string) []string {
 }
 
 // 带停止通道的特定Pod监控
-func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan chan bool) {
+func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan chan bool, successChan chan bool) {
 	fmt.Printf("👀 监控特定Pod: %s (命名空间: %s)\n", strings.Join(podNames, ", "), namespace)
 	currentFailures := 0 // 当前循环中的失败次数
 	failurePodName := ""
@@ -898,6 +911,7 @@ func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan 
 			if currentFailures > 1 {
 				fmt.Printf("完成pod状态监控: 原先pod %s 已出退  \n" , failurePodName)
 				stopChan <- true
+				successChan <- true
 			} else {
 				fmt.Printf(strings.Repeat("-", 50) + "\n")
 				time.Sleep(5 * time.Second)

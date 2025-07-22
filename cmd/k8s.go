@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -601,10 +602,13 @@ func showPodLogs(args []string, namespace, labelSelector string, follow bool) {
     showPodLogsByName(podName, namespace, follow)
 }
 
-// 添加新函数：进入Pod容器
 func execPodContainer(podName, namespace string) {
+    // 创建上下文用于控制子进程
+    ctx, cancel := context.WithCancel(context.Background())
+    defer cancel()
+    
     // 检查Pod是否存在且运行正常
-    cmd := exec.Command("kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
+    cmd := exec.CommandContext(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
     output, err := cmd.Output()
     if err != nil {
         fmt.Printf("❌ Pod %s 不存在或无法访问\n", podName)
@@ -621,11 +625,38 @@ func execPodContainer(podName, namespace string) {
     fmt.Printf("✅ 正在进入 Pod %s...\n", podName)
 
     // 准备进入容器的命令
-    execCmd := exec.Command( "kubectl", "exec", "-it", "-n", namespace, podName, "--", "/bin/sh")
+    execCmd := exec.CommandContext(ctx, "kubectl", "exec", "-it", "-n", namespace, podName, "--", "/bin/sh")
     
     // 设置标准输入输出 - 交还终端执行逻辑 
     execCmd.Stdin = os.Stdin
     execCmd.Stdout = os.Stdout
     execCmd.Stderr = os.Stderr
-    execCmd.Run()
+    
+    // 监听系统信号
+    sigChan := make(chan os.Signal, 1)
+    signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+    
+    // 启动子进程
+    if err := execCmd.Start(); err != nil {
+        fmt.Printf("❌ 启动kubectl exec失败: %v\n", err)
+        return
+    }
+    
+    // 等待子进程退出或收到信号
+    done := make(chan error, 1)
+    go func() {
+        done <- execCmd.Wait()
+    }()
+    
+    select {
+    case sig := <-sigChan:
+        fmt.Printf("收到信号 %v，终止进程...\n", sig)
+        cancel() // 通知子进程退出
+        time.Sleep(500 * time.Millisecond) // 给子进程一点时间优雅退出
+        execCmd.Process.Kill() // 强制终止子进程
+    case err := <-done:
+        if err != nil {
+            fmt.Printf("kubectl exec 异常退出: %v\n", err)
+        }
+    }
 }
