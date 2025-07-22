@@ -785,57 +785,6 @@ func checkK8sDeployment(jobName string) {
 	checkK8sDeploymentWithTimeout(deploymentName, "default", 100*time.Second)
 }
 
-// 带超时和中断支持的K8s部署检查
-func checkK8sDeploymentWithTimeout(deploymentName, namespace string, timeout time.Duration) {
-	// 设置信号处理，捕获 Ctrl+C
-	c := make(chan os.Signal, 1)
-	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	
-	// 创建超时定时器
-	timeoutTimer := time.NewTimer(timeout)
-	defer timeoutTimer.Stop()
-	
-	// 创建停止通道
-	stopChan := make(chan bool)
-		// 创建成功通道
-	successChan := make(chan bool)
-
-	// 确保在函数结束时关闭所有通道
-	defer func() {
-		signal.Stop(c) // 停止信号通知
-		close(c)       // 关闭信号通道
-		close(stopChan)  // 关闭停止通道
-		close(successChan) // 关闭成功通道
-	}()
-
-	
-	// 启动信号监听协程
-	go func() {
-		<-c
-		fmt.Printf("\n\n👋 收到退出信号，停止检查...\n")
-		stopChan <- true
-	}()
-	
-	// 启动超时监听协程
-	go func() {
-		select {
-		case <-timeoutTimer.C:
-			fmt.Printf("\n\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
-			stopChan <- true
-		case <-successChan:
-			// 如果成功了，就不需要发送超时信号
-			return
-		}
-	}()
-	
-	// 首先尝试找到匹配的Pod
-	matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
-
-	fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
-		// 监控特定的Pod
-	watchSpecificPodsWithTimeout(matchedPods, namespace, stopChan, successChan)
-}
-
 // 为部署查找匹配的Pod
 func findMatchingPodsForDeployment(deploymentName, namespace string) []string {
 	// 获取所有Pod
@@ -860,6 +809,61 @@ func findMatchingPodsForDeployment(deploymentName, namespace string) []string {
 	}
 
 	return matchedPods
+}
+
+// 带超时和中断支持的K8s部署检查
+func checkK8sDeploymentWithTimeout(deploymentName, namespace string, timeout time.Duration) {
+	// 设置信号处理，捕获 Ctrl+C
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	
+	// 创建超时定时器
+	timeoutTimer := time.NewTimer(timeout)
+	
+	// 创建停止通道
+	stopChan := make(chan bool)
+		// 创建成功通道
+	successChan := make(chan bool)
+
+	// 确保在函数结束时关闭所有通道
+	defer func() {
+		signal.Stop(c) // 停止信号通知
+		// 不在这里关闭通道，让发送方负责
+    timeoutTimer.Stop()
+	}()
+	
+	// 启动信号监听协程
+	go func() {
+		<-c
+		fmt.Printf("\n\n👋 收到退出信号，停止检查...\n")
+
+		select {
+			case stopChan <- true:  // 尝试发送停止信号
+			default:
+		}
+	}()
+	
+	// 启动超时监听协程
+	go func() {
+		select {
+		case <-timeoutTimer.C:
+			fmt.Printf("\n\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
+			select {
+				case stopChan <- true:  // 尝试发送停止信号
+				default:
+			}
+		case <-successChan:
+			// 如果成功了，就不需要发送超时信号
+			return
+		}
+	}()
+	
+	// 首先尝试找到匹配的Pod
+	matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
+
+	fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
+		// 监控特定的Pod
+	watchSpecificPodsWithTimeout(matchedPods, namespace, stopChan, successChan)
 }
 
 // 带停止通道的特定Pod监控
@@ -910,8 +914,15 @@ func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan 
 
 			if currentFailures > 1 {
 				fmt.Printf("完成pod状态监控: 原先pod %s 已出退  \n" , failurePodName)
-				stopChan <- true
-				successChan <- true
+				select {
+					case successChan <- true:  // 尝试发送成功信号
+					default:
+				}
+				select {
+					case stopChan <- true:  // 尝试发送停止信号
+					default:
+				}
+    		return
 			} else {
 				fmt.Printf(strings.Repeat("-", 50) + "\n")
 				time.Sleep(5 * time.Second)
