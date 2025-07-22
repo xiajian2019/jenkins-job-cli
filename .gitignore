@@ -8,5 +8,7 @@ jenkins-job-cli
 /trush/
 /_build/
 
+.vscode/
+
 upload_zjk.sh
 local_install.sh

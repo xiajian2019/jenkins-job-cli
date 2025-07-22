@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"html"
@@ -493,7 +494,7 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 						}
 						cursor = nc
 					}
-					
+
 					finishCh <- struct {
 						err    error
 						result string
@@ -726,10 +727,10 @@ func stripHTMLTags(text string) string {
 func extractDeploymentName(jobName string) string {
 	// 移除常见的Jenkins任务前缀和后缀
 	deploymentName := strings.ToLower(jobName)
-	
+
 	// 移除常见的前缀
 	prefixes := []string{
-		"deploy-", "deployment-", "k8s-", "kubernetes-", 
+		"deploy-", "deployment-", "k8s-", "kubernetes-",
 		"build-", "ci-", "cd-", "pipeline-", "job-", "rc-",
 	}
 	for _, prefix := range prefixes {
@@ -738,10 +739,10 @@ func extractDeploymentName(jobName string) string {
 			break
 		}
 	}
-	
+
 	// 移除常见的后缀
 	suffixes := []string{
-		"-deploy", "-deployment", "-k8s", "-kubernetes", 
+		"-deploy", "-deployment", "-k8s", "-kubernetes",
 		"-build", "-ci", "-cd", "-pipeline",
 		"-prod", "-production", "-staging", "-dev", "-development",
 		"-test", "-testing", "-uat",
@@ -752,27 +753,27 @@ func extractDeploymentName(jobName string) string {
 			break
 		}
 	}
-	
+
 	// 替换不符合Kubernetes命名规范的字符
 	// Kubernetes资源名称只能包含小写字母、数字和连字符
 	deploymentName = regexp.MustCompile(`[^a-z0-9-]`).ReplaceAllString(deploymentName, "-")
-	
+
 	// 移除开头和结尾的连字符
 	deploymentName = strings.Trim(deploymentName, "-")
-	
+
 	// 如果处理后的名称为空，使用原始名称的简化版本
 	if deploymentName == "" {
 		deploymentName = regexp.MustCompile(`[^a-zA-Z0-9-]`).ReplaceAllString(strings.ToLower(jobName), "-")
 		deploymentName = strings.Trim(deploymentName, "-")
 	}
-	
+
 	return deploymentName
 }
 
 func checkK8sDeployment(jobName string) {
 	// 根据任务名称推断部署名称
 	deploymentName := extractDeploymentName(jobName)
-	
+
 	fmt.Printf("🔍 检查部署: %s (从任务名 %s 推断)\n", deploymentName, jobName)
 	if deploymentName == "" {
 		fmt.Println("未推断到部署名称")
@@ -780,9 +781,9 @@ func checkK8sDeployment(jobName string) {
 	}
 
 	fmt.Printf("⏱️  将监控100秒后自动退出 (按 Ctrl+C 可提前退出), 或者 存在状态获取失败 \n\n")
-		
+
 	// 使用 k8s.go 中的监控逻辑，添加超时和中断支持
-	checkK8sDeploymentWithTimeout(deploymentName, "default", 100*time.Second)
+	checkK8sDeploymentWithContext(deploymentName, "default", 100*time.Second)
 }
 
 // 为部署查找匹配的Pod
@@ -802,7 +803,7 @@ func findMatchingPodsForDeployment(deploymentName, namespace string) []string {
 		if pod == "" {
 			continue
 		}
-		// 以部署名称开头的 pod 
+		// 以部署名称开头的 pod
 		if strings.HasPrefix(strings.ToLower(pod), deploymentPattern) {
 			matchedPods = append(matchedPods, pod)
 		}
@@ -811,58 +812,151 @@ func findMatchingPodsForDeployment(deploymentName, namespace string) []string {
 	return matchedPods
 }
 
-// 带超时和中断支持的K8s部署检查
+// context 的写法是确实比手动管理 channel 要简洁，而且写起来，不容出错
+func checkK8sDeploymentWithContext(deploymentName, namespace string, timeout time.Duration) {
+	// 创建根上下文，并整合超时和中断信号
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // 确保所有派生上下文被取消
+
+	// 设置信号处理（Ctrl+C/SIGTERM）
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-signalChan
+		fmt.Println("\n👋 收到退出信号，停止检查...")
+		cancel() // 触发上下文取消
+	}()
+
+	// 启动独立超时协程
+	go func() {
+		time.Sleep(timeout) // 阻塞等待超时
+		fmt.Printf("\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
+		cancel() // 超时后主动取消
+	}()
+
+	// 启动Pod监控协程
+	go func() {
+		matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
+		fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
+		watchSpecificPodsWithContext(ctx, cancel, matchedPods, namespace)
+	}()
+
+	// 主协程等待上下文结束
+	<-ctx.Done()
+}
+
+// 使用Context监控Pod状态
+func watchSpecificPodsWithContext(ctx context.Context, cancel context.CancelFunc, podNames []string, namespace string) {
+	fmt.Printf("👀 监控特定Pod: %s (命名空间: %s)\n", strings.Join(podNames, ", "), namespace)
+	currentFailures := 0
+	failurePodName := ""
+
+	for {
+		select {
+		case <-ctx.Done(): // 响应取消或超时
+			return
+		default:
+			fmt.Printf("⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
+
+			for _, podName := range podNames {
+				cmd := exec.CommandContext(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
+				output, err := cmd.Output()
+				if err != nil {
+					fmt.Printf("❌ %s: 获取状态失败 - %v\n", podName, err)
+					currentFailures++
+					failurePodName = podName
+					continue
+				}
+
+				// 解析Pod状态
+				line := strings.TrimSpace(string(output))
+				if line == "" {
+					fmt.Printf("⚠️  %s: Pod不存在\n", podName)
+					continue
+				}
+
+				fields := strings.Fields(line)
+				if len(fields) >= 3 {
+					ready := fields[1]
+					status := fields[2]
+
+					if status == "Running" && strings.Contains(ready, "/") {
+						readyParts := strings.Split(ready, "/")
+						if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
+							fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
+						} else {
+							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
+						}
+					} else {
+						fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
+					}
+				}
+			}
+
+			if currentFailures > 1 {
+				fmt.Printf("完成pod状态监控: 原先pod %s 已退出\n", failurePodName)
+				cancel()
+				return
+			}
+
+			fmt.Println(strings.Repeat("-", 50))
+			time.Sleep(5 * time.Second)
+		}
+	}
+}
+
+// 带超时和中断支持的K8s部署检查 - 通过 channel  和 timeoutTimer 来实现超时
 func checkK8sDeploymentWithTimeout(deploymentName, namespace string, timeout time.Duration) {
 	// 设置信号处理，捕获 Ctrl+C
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
-	
+
 	// 创建超时定时器
 	timeoutTimer := time.NewTimer(timeout)
-	
+
 	// 创建停止通道
 	stopChan := make(chan bool)
-		// 创建成功通道
+	// 创建成功通道
 	successChan := make(chan bool)
 
 	// 确保在函数结束时关闭所有通道
 	defer func() {
 		signal.Stop(c) // 停止信号通知
 		// 不在这里关闭通道，让发送方负责
-    timeoutTimer.Stop()
+		timeoutTimer.Stop()
 	}()
-	
+
 	// 启动信号监听协程
 	go func() {
 		<-c
 		fmt.Printf("\n\n👋 收到退出信号，停止检查...\n")
 
 		select {
-			case stopChan <- true:  // 尝试发送停止信号
-			default:
+		case stopChan <- true: // 尝试发送停止信号
+		default:
 		}
 	}()
-	
+
 	// 启动超时监听协程
 	go func() {
 		select {
 		case <-timeoutTimer.C:
 			fmt.Printf("\n\n⏰ 检查超时 (%.0f秒)，自动退出\n", timeout.Seconds())
 			select {
-				case stopChan <- true:  // 尝试发送停止信号
-				default:
+			case stopChan <- true: // 尝试发送停止信号
+			default:
 			}
 		case <-successChan:
 			// 如果成功了，就不需要发送超时信号
 			return
 		}
 	}()
-	
+
 	// 首先尝试找到匹配的Pod
 	matchedPods := findMatchingPodsForDeployment(deploymentName, namespace)
 
 	fmt.Printf("✅ 找到 %d 个匹配的Pod: %s\n", len(matchedPods), strings.Join(matchedPods, ", "))
-		// 监控特定的Pod
+	// 监控特定的Pod
 	watchSpecificPodsWithTimeout(matchedPods, namespace, stopChan, successChan)
 }
 
@@ -883,7 +977,7 @@ func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan 
 				output, err := cmd.Output()
 				if err != nil {
 					fmt.Printf("❌ %s: 获取状态失败 - %v\n", podName, err)
-					currentFailures ++ // 当前循环中的失败次数
+					currentFailures++ // 当前循环中的失败次数
 					failurePodName = podName
 					continue
 				}
@@ -913,16 +1007,16 @@ func watchSpecificPodsWithTimeout(podNames []string, namespace string, stopChan 
 			}
 
 			if currentFailures > 1 {
-				fmt.Printf("完成pod状态监控: 原先pod %s 已出退  \n" , failurePodName)
+				fmt.Printf("完成pod状态监控: 原先pod %s 已出退  \n", failurePodName)
 				select {
-					case successChan <- true:  // 尝试发送成功信号
-					default:
+				case successChan <- true: // 尝试发送成功信号
+				default:
 				}
 				select {
-					case stopChan <- true:  // 尝试发送停止信号
-					default:
+				case stopChan <- true: // 尝试发送停止信号
+				default:
 				}
-    		return
+				return
 			} else {
 				fmt.Printf(strings.Repeat("-", 50) + "\n")
 				time.Sleep(5 * time.Second)
