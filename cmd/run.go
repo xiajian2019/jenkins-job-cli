@@ -435,8 +435,10 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 
 				trimmedLine := strings.TrimSpace(fline)
 				// 如果 trimmedLine 中包含 front， front-boohee 或者 yarn 或者 npm 或者 pnpm 则不需要检查部署状态
-				if strings.Contains(trimmedLine, "front") || strings.Contains(trimmedLine, "front-boohee") || strings.Contains(trimmedLine, "yarn") || strings.Contains(trimmedLine, "front/asset/") || strings.Contains(trimmedLine, "front/chunkScript") || strings.Contains(trimmedLine, "Webpack") {
-					needWatchDeployStatus = false
+				if needWatchDeployStatus {
+					if strings.Contains(trimmedLine, "front-boohee") || strings.Contains(trimmedLine, "yarn") || strings.Contains(trimmedLine, "front/asset/") || strings.Contains(trimmedLine, "front/chunkScript") || strings.Contains(trimmedLine, "Webpack") {
+						needWatchDeployStatus = false
+					}
 				}
 
 				if len(trimmedLine) > 0 && !seenLines[trimmedLine] {
