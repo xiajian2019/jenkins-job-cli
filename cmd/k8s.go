@@ -139,7 +139,7 @@ func showPodStatus(args []string, namespace, selector string, watch, showLogs, n
 				for i, pod := range selectedPods {
 					fmt.Printf("%d. %s\n", i+1, pod)
 				}
-				
+
 				rl, err := readline.New("请选择要进入的Pod编号: ")
 				if err != nil {
 					fmt.Printf("读取输入失败: %v\n", err)
@@ -210,7 +210,7 @@ func selectPodFromList(pods []string, pattern string) []string {
 		fmt.Printf("%d. %s\n", i+1, pod)
 	}
 
-	rl, err := readline.New("\n请选择要操作的Pod编号 (多个用逗号分隔，如: 1,3,5 或 按Enter取消): ")
+	rl, err := readline.New("\n请选择要操作的Pod编号 (多个用逗号或空格分隔，如: 1,3,5 或 1 3 5 或 按Enter取消): ")
 	if err != nil {
 		fmt.Printf("读取输入失败: %v\n", err)
 		return nil
@@ -228,22 +228,28 @@ func selectPodFromList(pods []string, pattern string) []string {
 		return nil
 	}
 
-	// 解析输入的编号
+	// 解析输入的编号，支持逗号和空格分割
 	var selectedPods []string
-	indices := strings.Split(line, ",")
-	
+	var indices []string
+
+	// 先按逗号分割，再按空格分割
+	if strings.Contains(line, ",") {
+		indices = strings.Split(line, ",")
+	} else {
+		indices = strings.Fields(line)
+	}
+
 	for _, indexStr := range indices {
 		indexStr = strings.TrimSpace(indexStr)
 		if indexStr == "" {
 			continue
 		}
-		
+
 		index, err := strconv.Atoi(indexStr)
 		if err != nil || index < 1 || index > len(pods) {
-			fmt.Printf("无效的选择: %s\n", indexStr)
-			return nil
+			continue
 		}
-		
+
 		selectedPods = append(selectedPods, pods[index-1])
 	}
 
