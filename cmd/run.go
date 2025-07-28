@@ -896,13 +896,14 @@ func watchSpecificPodsWithContext(ctx context.Context, cancel context.CancelFunc
 				if len(fields) >= 3 {
 					ready := fields[1]
 					status := fields[2]
+					age := fields[4]
 
 					if status == "Running" && strings.Contains(ready, "/") {
 						readyParts := strings.Split(ready, "/")
 						if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
-							fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
+							fmt.Printf("✅ %s: %s (%s)\n", podName, status, age)
 						} else {
-							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
+							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, age)
 						}
 					} else {
 						fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
