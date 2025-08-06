@@ -336,62 +336,80 @@ func watchSpecificPods(podNames []string, namespace string) {
 	// 设置信号处理，捕获 Ctrl+C
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(c)
 
 	// 创建一个用于停止监控的通道
-	stopChan := make(chan bool)
+	stopChan := make(chan bool, 1)
 
 	// 启动信号监听协程
 	go func() {
 		<-c
 		fmt.Printf("\n\n👋 收到退出信号，停止监控...\n")
-		stopChan <- true
+		select {
+		case stopChan <- true:
+		default:
+		}
 	}()
+
+	// 创建定时器，用于替代 time.Sleep
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	// 立即执行一次检查
+	checkPodStatus := func() {
+		fmt.Printf("\r⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
+
+		for _, podName := range podNames {
+			// 使用带超时的 context 来避免 kubectl 命令卡住
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			cmd := exec.CommandContext(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
+			output, err := cmd.Output()
+			cancel()
+
+			if err != nil {
+				fmt.Printf("❌ %s: 获取状态失败 - %v\n", podName, err)
+				continue
+			}
+
+			line := strings.TrimSpace(string(output))
+			if line == "" {
+				fmt.Printf("⚠️  %s: Pod不存在\n", podName)
+				continue
+			}
+
+			fields := strings.Fields(line)
+			if len(fields) >= 3 {
+				ready := fields[1]
+				status := fields[2]
+				age := ""
+				if len(fields) >= 5 {
+					age = fields[4]
+				}
+
+				if status == "Running" && strings.Contains(ready, "/") {
+					readyParts := strings.Split(ready, "/")
+					if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
+						fmt.Printf("✅ %s: %s (%s, Age: %s)\n", podName, status, ready, age)
+					} else {
+						fmt.Printf("⚠️  %s: %s (%s, Age: %s) - 未完全就绪\n", podName, status, ready, age)
+					}
+				} else {
+					fmt.Printf("❌ %s: %s (%s, Age: %s)\n", podName, status, ready, age)
+				}
+			}
+		}
+		fmt.Printf("\n" + strings.Repeat("-", 50) + "\n")
+	}
+
+	// 立即执行一次检查
+	checkPodStatus()
 
 	for {
 		select {
 		case <-stopChan:
 			return
-		default:
-			fmt.Printf("\r⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
-
-			runningCount := 0
-
-			for _, podName := range podNames {
-				cmd := exec.Command("kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
-				output, err := cmd.Output()
-				if err != nil {
-					fmt.Printf("❌ %s: 获取状态失败 - %v\n", podName, err)
-					continue
-				}
-
-				line := strings.TrimSpace(string(output))
-				if line == "" {
-					fmt.Printf("⚠️  %s: Pod不存在\n", podName)
-					continue
-				}
-
-				fields := strings.Fields(line)
-				if len(fields) >= 3 {
-					ready := fields[1]
-					status := fields[2]
-					age := fields[4]
-
-					if status == "Running" && strings.Contains(ready, "/") {
-						readyParts := strings.Split(ready, "/")
-						if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
-							runningCount++
-							fmt.Printf("✅ %s: %s (%s)\n", podName, status, age)
-						} else {
-							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, age)
-						}
-					} else {
-						fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
-					}
-				}
-			}
-
-			fmt.Printf("\n" + strings.Repeat("-", 50) + "\n")
-			time.Sleep(5 * time.Second)
+		case <-ticker.C:
+			checkPodStatus()
 		}
 	}
 }
@@ -587,67 +605,88 @@ func watchPodStatus(namespace, labelSelector string) {
 	// 设置信号处理，捕获 Ctrl+C
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(c)
 
 	// 创建一个用于停止监控的通道
-	stopChan := make(chan bool)
+	stopChan := make(chan bool, 1)
 
 	// 启动信号监听协程
 	go func() {
 		<-c
 		fmt.Printf("\n\n👋 收到退出信号，停止监控...\n")
-		stopChan <- true
+		select {
+		case stopChan <- true:
+		default:
+		}
 	}()
+
+	// 创建定时器，用于替代 time.Sleep
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	checkPodStatus := func() {
+		fmt.Printf("\r⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
+
+		args := []string{"get", "pods"}
+		if labelSelector != "" {
+			args = append(args, "-l", labelSelector)
+		}
+		args = append(args, "-n", namespace, "--no-headers")
+
+		// 使用带超时的 context
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		cmd := exec.CommandContext(ctx, "kubectl", args...)
+		output, err := cmd.Output()
+		cancel()
+
+		if err != nil {
+			fmt.Printf("❌ 监控失败: %v\n", err)
+			return
+		}
+
+		lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+		if len(lines) == 0 || lines[0] == "" {
+			fmt.Printf("⚠️  未找到匹配的Pod\n")
+		} else {
+			for _, line := range lines {
+				if line == "" {
+					continue
+				}
+				fields := strings.Fields(line)
+				if len(fields) >= 3 {
+					podName := fields[0]
+					ready := fields[1]
+					status := fields[2]
+					age := ""
+					if len(fields) >= 5 {
+						age = fields[4]
+					}
+
+					if status == "Running" && strings.Contains(ready, "/") {
+						readyParts := strings.Split(ready, "/")
+						if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
+							fmt.Printf("✅ %s: %s (%s, Age: %s)\n", podName, status, ready, age)
+						} else {
+							fmt.Printf("⚠️  %s: %s (%s, Age: %s) - 未完全就绪\n", podName, status, ready, age)
+						}
+					} else {
+						fmt.Printf("❌ %s: %s (%s, Age: %s)\n", podName, status, ready, age)
+					}
+				}
+			}
+		}
+		fmt.Printf("\n" + strings.Repeat("-", 50) + "\n")
+	}
+
+	// 立即执行一次检查
+	checkPodStatus()
 
 	for {
 		select {
 		case <-stopChan:
 			return
-		default:
-			fmt.Printf("\r⏰ %s - 检查Pod状态...\n", time.Now().Format("15:04:05"))
-
-			args := []string{"get", "pods"}
-			if labelSelector != "" {
-				args = append(args, "-l", labelSelector)
-			}
-			args = append(args, "-n", namespace, "--no-headers")
-
-			cmd := exec.Command("kubectl", args...)
-			output, err := cmd.Output()
-			if err != nil {
-				fmt.Printf("❌ 监控失败: %v\n", err)
-				time.Sleep(5 * time.Second)
-				continue
-			}
-
-			lines := strings.Split(strings.TrimSpace(string(output)), "\n")
-			if len(lines) == 0 || lines[0] == "" {
-				fmt.Printf("⚠️  未找到匹配的Pod\n")
-			} else {
-				for _, line := range lines {
-					if line == "" {
-						continue
-					}
-					fields := strings.Fields(line)
-					if len(fields) >= 3 {
-						podName := fields[0]
-						ready := fields[1]
-						status := fields[2]
-
-						if status == "Running" && strings.Contains(ready, "/") {
-							readyParts := strings.Split(ready, "/")
-							if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
-								fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
-							} else {
-								fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
-							}
-						} else {
-							fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
-						}
-					}
-				}
-			}
-
-			time.Sleep(5 * time.Second)
+		case <-ticker.C:
+			checkPodStatus()
 		}
 	}
 }
