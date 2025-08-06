@@ -382,6 +382,12 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 	go barHandler(jobUrl, keyCh, chMsg, finishCh, &wg)
 	defer close(closeCh)
 	defer wg.Wait()
+
+	// 添加总体超时机制
+	totalTimeout := 12 * time.Minute // 12分钟总超时
+	timeoutTimer := time.NewTimer(totalTimeout)
+	defer timeoutTimer.Stop()
+
 	go func() {
 		for {
 			select {
@@ -394,6 +400,14 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 					ticks++
 				}
 			case <-closeCh:
+				return
+			case <-timeoutTimer.C:
+				fmt.Printf("\n⏰ Job 监控超时 (%.0f分钟)，自动退出\n", totalTimeout.Minutes())
+				err := errors.New("timeout")
+				finishCh <- struct {
+					err    error
+					result string
+				}{err, "TIMEOUT"}
 				return
 			}
 		}
@@ -474,7 +488,22 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 		return nextCursor
 	}
 
+	// 添加主循环超时检查
+	mainLoopTimeout := 10 * time.Minute // 主循环10分钟超时
+	mainLoopStart := time.Now()
+
 	for {
+		// 检查主循环是否超时
+		if time.Since(mainLoopStart) > mainLoopTimeout {
+			fmt.Printf("\n⏰ Job 主循环超时 (%.0f分钟)，自动退出\n", mainLoopTimeout.Minutes())
+			err := errors.New("main loop timeout")
+			finishCh <- struct {
+				err    error
+				result string
+			}{err, "TIMEOUT"}
+			return err
+		}
+
 		curBuild, err := jj.GetBuildInfo(env, name, number)
 		if err != nil {
 			if getTime()-stime > int64(60*time.Millisecond) {
@@ -509,7 +538,7 @@ func watchTheJob(env jj.Env, name string, number int, keyCh chan string) error {
 					}{nil, curBuild.Result}
 
 					if needWatchDeployStatus {
-						// 任务成功完成后检查K8s部署状态
+						// 任务成功完成后检查K8s部署状态，添加超时控制
 						fmt.Println("\n🔍 检查Kubernetes部署状态...")
 						checkK8sDeployment(name)
 					}
