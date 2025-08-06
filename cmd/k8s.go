@@ -16,13 +16,7 @@ import (
 )
 
 func init() {
-	k8sCmd := &cobra.Command{
-		Use:   "k8s",
-		Short: "Kubernetes相关操作",
-		Long:  `管理和监控Kubernetes资源`,
-	}
-
-	// Pod状态查看命令
+	// Pod状态查看命令的参数
 	var namespace string
 	var watch bool
 	var selector string
@@ -30,8 +24,40 @@ func init() {
 	var follow bool
 	var detailed bool
 	var simple bool
-	// 在 init 函数中的变量声明部分添加
 	var execContainer bool
+
+	k8sCmd := &cobra.Command{
+		Use:   "k8s [app-name]",
+		Short: "Kubernetes相关操作",
+		Long: `管理和监控Kubernetes资源
+
+默认行为等同于 pods 子命令，查看Pod状态和日志
+
+示例:
+  jj k8s                         # 查看所有Pod (简洁模式)
+  jj k8s myapp                   # 模糊匹配包含myapp的Pod，支持选择
+  jj k8s myapp -w                # 实时监控Pod状态
+  jj k8s myapp -l                # 查看Pod最近100行日志并实时追踪
+  jj k8s myapp -l --no-follow    # 仅查看最近100行日志，不追踪
+  jj k8s myapp -d                # 显示详细信息
+  jj k8s myapp -e                # 进入容器交互式终端
+  jj k8s myapp -s                # 简洁模式 (仅显示基本状态)
+  
+  jj k8s pods myapp              # 等同于 jj k8s myapp (显式使用pods子命令)`,
+		Run: func(cmd *cobra.Command, args []string) {
+			// 默认执行 pods 逻辑
+			showPodStatus(args, namespace, selector, watch, showLogs, follow, detailed, simple, execContainer)
+		},
+	}
+
+	// 为k8s主命令添加参数
+	k8sCmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Kubernetes命名空间")
+	k8sCmd.Flags().BoolVarP(&watch, "watch", "w", false, "实时监控Pod状态变化")
+	k8sCmd.Flags().BoolVarP(&showLogs, "log", "l", false, "显示Pod日志 (默认最近100行并实时追踪)")
+	k8sCmd.Flags().BoolVar(&follow, "no-follow", false, "禁用实时追踪日志 (仅在--logs时有效)")
+	k8sCmd.Flags().BoolVarP(&detailed, "detailed", "d", false, "显示Pod详细信息")
+	k8sCmd.Flags().BoolVarP(&simple, "simple", "s", false, "简洁模式，仅显示基本状态")
+	k8sCmd.Flags().BoolVarP(&execContainer, "exec", "e", false, "进入容器交互式终端")
 
 	podsCmd := &cobra.Command{
 		Use:   "pods [app-name]",
@@ -42,7 +68,7 @@ func init() {
   jj k8s pods                    # 查看所有Pod (简洁模式)
   jj k8s pods myapp              # 模糊匹配包含myapp的Pod，支持选择
   jj k8s pods myapp -w           # 实时监控Pod状态
-  jj k8s pods myapp -l       # 查看Pod最近100行日志并实时追踪
+  jj k8s pods myapp -l           # 查看Pod最近100行日志并实时追踪
   jj k8s pods myapp -l --no-follow  # 仅查看最近100行日志，不追踪
   jj k8s pods myapp -d           # 显示详细信息
   jj k8s pods myapp -e           # 进入容器交互式终端
@@ -52,14 +78,13 @@ func init() {
 		},
 	}
 
-	// 为pods命令添加参数
+	// 为pods命令添加参数（继承父命令的参数）
 	podsCmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Kubernetes命名空间")
 	podsCmd.Flags().BoolVarP(&watch, "watch", "w", false, "实时监控Pod状态变化")
 	podsCmd.Flags().BoolVarP(&showLogs, "log", "l", false, "显示Pod日志 (默认最近100行并实时追踪)")
 	podsCmd.Flags().BoolVar(&follow, "no-follow", false, "禁用实时追踪日志 (仅在--logs时有效)")
 	podsCmd.Flags().BoolVarP(&detailed, "detailed", "d", false, "显示Pod详细信息")
 	podsCmd.Flags().BoolVarP(&simple, "simple", "s", false, "简洁模式，仅显示基本状态")
-	// 在 podsCmd 的 flags 部分添加
 	podsCmd.Flags().BoolVarP(&execContainer, "exec", "e", false, "进入容器交互式终端")
 
 	k8sCmd.AddCommand(podsCmd)
@@ -349,14 +374,15 @@ func watchSpecificPods(podNames []string, namespace string) {
 				if len(fields) >= 3 {
 					ready := fields[1]
 					status := fields[2]
+					age := fields[4]
 
 					if status == "Running" && strings.Contains(ready, "/") {
 						readyParts := strings.Split(ready, "/")
 						if len(readyParts) == 2 && readyParts[0] == readyParts[1] {
 							runningCount++
-							fmt.Printf("✅ %s: %s (%s)\n", podName, status, ready)
+							fmt.Printf("✅ %s: %s (%s)\n", podName, status, age)
 						} else {
-							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, ready)
+							fmt.Printf("⚠️  %s: %s (%s) - 未完全就绪\n", podName, status, age)
 						}
 					} else {
 						fmt.Printf("❌ %s: %s (%s)\n", podName, status, ready)
