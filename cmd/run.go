@@ -103,7 +103,7 @@ func init() {
 				fmt.Printf("%d. %s\n", i+1, job)
 			}
 
-			rl, err := readline.New("\n请选择要运行的任务编号: ")
+			rl, err := readline.New("请选择要运行的任务编号: ")
 			if err != nil {
 				fmt.Printf("读取输入失败: %v\n", err)
 				return

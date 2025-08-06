@@ -234,8 +234,9 @@ func selectPodFromList(pods []string, pattern string) []string {
 	for i, pod := range pods {
 		fmt.Printf("%d. %s\n", i+1, pod)
 	}
+	fmt.Println() // 在提示符前添加一个空行，使界面更清晰
 
-	rl, err := readline.New("\n请选择要操作的Pod编号 (多个用逗号或空格分隔，如: 1,3,5 或 1 3 5 或 按Enter取消): ")
+	rl, err := readline.New("请选择要操作的Pod编号 (多个用逗号或空格分隔，如: 1,3,5 或 1 3 5 或 按Enter取消): ")
 	if err != nil {
 		fmt.Printf("读取输入失败: %v\n", err)
 		return nil
