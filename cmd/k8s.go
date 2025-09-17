@@ -43,7 +43,8 @@ func init() {
   jj k8s myapp -e                # 进入容器交互式终端
   jj k8s myapp -s                # 简洁模式 (仅显示基本状态)
   
-  jj k8s pods myapp              # 等同于 jj k8s myapp (显式使用pods子命令)`,
+  jj k8s pods myapp              # 等同于 jj k8s myapp (显式使用pods子命令)
+  jj k8s restart myapp           # 重启特定的Pod`,
 		Run: func(cmd *cobra.Command, args []string) {
 			// 默认执行 pods 逻辑
 			showPodStatus(args, namespace, selector, watch, showLogs, follow, detailed, simple, execContainer)
@@ -72,7 +73,8 @@ func init() {
   jj k8s pods myapp -l --no-follow  # 仅查看最近100行日志，不追踪
   jj k8s pods myapp -d           # 显示详细信息
   jj k8s pods myapp -e           # 进入容器交互式终端
-  jj k8s pods myapp -s           # 简洁模式 (仅显示基本状态)`,
+  jj k8s pods myapp -s           # 简洁模式 (仅显示基本状态)
+  jj k8s restart myapp           # 重启特定的Pod`,
 		Run: func(cmd *cobra.Command, args []string) {
 			showPodStatus(args, namespace, selector, watch, showLogs, follow, detailed, simple, execContainer)
 		},
@@ -87,7 +89,24 @@ func init() {
 	podsCmd.Flags().BoolVarP(&simple, "simple", "s", false, "简洁模式，仅显示基本状态")
 	podsCmd.Flags().BoolVarP(&execContainer, "exec", "e", false, "进入容器交互式终端")
 
+	restartCmd := &cobra.Command{
+		Use:   "restart [app-name]",
+		Short: "重启特定的Pod",
+		Long: `重启Kubernetes Pod
+
+示例:
+  jj k8s restart myapp           # 模糊匹配包含myapp的Pod，支持选择并重启
+  jj k8s restart myapp -n prod   # 在prod命名空间中重启Pod`,
+		Run: func(cmd *cobra.Command, args []string) {
+			restartPods(args, namespace)
+		},
+	}
+
+	// 为restart命令添加参数
+	restartCmd.Flags().StringVarP(&namespace, "namespace", "n", "default", "Kubernetes命名空间")
+
 	k8sCmd.AddCommand(podsCmd)
+	k8sCmd.AddCommand(restartCmd)
 	rootCmd.AddCommand(k8sCmd)
 }
 
@@ -729,60 +748,144 @@ func showPodLogs(args []string, namespace, labelSelector string, follow bool) {
 }
 
 func execPodContainer(podName, namespace string) {
-	// 创建上下文用于控制子进程
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	fmt.Printf("🚀 进入Pod容器: %s (命名空间: %s)\n", podName, namespace)
 
-	// 检查Pod是否存在且运行正常
-	cmd := exec.CommandContext(ctx, "kubectl", "get", "pod", podName, "-n", namespace, "--no-headers")
+	// 获取Pod的容器信息
+	cmd := exec.Command("kubectl", "get", "pod", podName, "-n", namespace, "-o", "jsonpath={.spec.containers[*].name}")
 	output, err := cmd.Output()
 	if err != nil {
-		fmt.Printf("❌ Pod %s 不存在或无法访问\n", podName)
+		fmt.Printf("❌ 获取Pod容器信息失败: %v\n", err)
 		return
 	}
 
-	// 检查Pod状态
-	fields := strings.Fields(string(output))
-	if len(fields) < 3 || fields[2] != "Running" {
-		fmt.Printf("❌ Pod %s 未在运行状态 (当前状态: %s)\n", podName, fields[2])
+	containers := strings.Fields(strings.TrimSpace(string(output)))
+	if len(containers) == 0 {
+		fmt.Printf("❌ Pod %s 没有找到容器\n", podName)
 		return
 	}
 
-	fmt.Printf("✅ 正在进入 Pod %s...\n", podName)
+	var containerName string
+	if len(containers) == 1 {
+		containerName = containers[0]
+	} else {
+		// 多个容器，让用户选择
+		fmt.Printf("\n📦 找到 %d 个容器:\n", len(containers))
+		for i, container := range containers {
+			fmt.Printf("%d. %s\n", i+1, container)
+		}
 
-	// 准备进入容器的命令
-	execCmd := exec.CommandContext(ctx, "kubectl", "exec", "-it", "-n", namespace, podName, "--", "/bin/sh")
+		fmt.Print("\n请选择容器编号: ")
+		var choice int
+		_, err := fmt.Scanln(&choice)
+		if err != nil || choice < 1 || choice > len(containers) {
+			fmt.Println("❌ 无效的选择")
+			return
+		}
+		containerName = containers[choice-1]
+	}
 
-	// 设置标准输入输出 - 交还终端执行逻辑
+	fmt.Printf("🔗 连接到容器: %s\n", containerName)
+	fmt.Println("💡 提示: 输入 'exit' 退出容器")
+	fmt.Println()
+
+	// 执行kubectl exec命令
+	execCmd := exec.Command("kubectl", "exec", "-it", podName, "-n", namespace, "-c", containerName, "--", "/bin/bash")
 	execCmd.Stdin = os.Stdin
 	execCmd.Stdout = os.Stdout
 	execCmd.Stderr = os.Stderr
 
-	// 监听系统信号
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	err = execCmd.Run()
+	if err != nil {
+		// 尝试使用sh
+		fmt.Printf("\n⚠️  bash不可用，尝试使用sh...\n")
+		execCmd = exec.Command("kubectl", "exec", "-it", podName, "-n", namespace, "-c", containerName, "--", "/bin/sh")
+		execCmd.Stdin = os.Stdin
+		execCmd.Stdout = os.Stdout
+		execCmd.Stderr = os.Stderr
+		err = execCmd.Run()
+		if err != nil {
+			fmt.Printf("❌ 进入容器失败: %v\n", err)
+		}
+	}
+}
 
-	// 启动子进程
-	if err := execCmd.Start(); err != nil {
-		fmt.Printf("❌ 启动kubectl exec失败: %v\n", err)
+// 重启Pod
+func restartPods(args []string, namespace string) {
+	if len(args) == 0 {
+		fmt.Println("❌ 请指定要重启的Pod名称或模式")
 		return
 	}
 
-	// 等待子进程退出或收到信号
-	done := make(chan error, 1)
-	go func() {
-		done <- execCmd.Wait()
-	}()
+	// 进行模糊匹配
+	matchedPods := findMatchingPods(args[0], namespace)
+	if len(matchedPods) == 0 {
+		fmt.Printf("❌ 未找到匹配 '%s' 的Pod\n", args[0])
+		return
+	}
 
-	select {
-	case sig := <-sigChan:
-		fmt.Printf("收到信号 %v，终止进程...\n", sig)
-		cancel()                           // 通知子进程退出
-		time.Sleep(500 * time.Millisecond) // 给子进程一点时间优雅退出
-		execCmd.Process.Kill()             // 强制终止子进程
-	case err := <-done:
+	var selectedPods []string
+	if len(matchedPods) == 1 {
+		// 只有一个匹配，直接使用
+		selectedPods = matchedPods
+	} else {
+		// 多个匹配，让用户选择
+		selectedPods = selectPodFromList(matchedPods, args[0])
+		if len(selectedPods) == 0 {
+			return // 用户取消选择
+		}
+	}
+
+	// 直接执行重启，无需确认
+	fmt.Printf("\n🔄 开始重启Pod...\n")
+	var watchPatterns []string
+	for _, podName := range selectedPods {
+		fmt.Printf("🔄 重启Pod: %s\n", podName)
+		cmd := exec.Command("kubectl", "delete", "pod", podName, "-n", namespace)
+		output, err := cmd.CombinedOutput()
 		if err != nil {
-			fmt.Printf("kubectl exec 异常退出: %v\n", err)
+			fmt.Printf("❌ 重启Pod %s 失败: %v\n输出: %s\n", podName, err, string(output))
+			continue
+		}
+		fmt.Printf("✅ Pod %s 重启成功\n", podName)
+		
+		// 提取Pod名称前缀（最后一个'-'之前的部分）用于watch
+		lastDashIndex := strings.LastIndex(podName, "-")
+		if lastDashIndex > 0 {
+			prefix := podName[:lastDashIndex]
+			// 避免重复添加相同的前缀
+			found := false
+			for _, existing := range watchPatterns {
+				if existing == prefix {
+					found = true
+					break
+				}
+			}
+			if !found {
+				watchPatterns = append(watchPatterns, prefix)
+			}
+		}
+	}
+
+	fmt.Printf("\n🎉 重启完成！\n")
+	
+	// 自动开始watch重启后的Pod
+	if len(watchPatterns) > 0 {
+		fmt.Printf("\n👀 开始监控重启后的Pod状态...\n")
+		for _, pattern := range watchPatterns {
+			fmt.Printf("🔍 监控模式: %s\n", pattern)
+		}
+		fmt.Printf("\n按 Ctrl+C 退出监控\n\n")
+		
+		// 等待一下让Pod有时间重新创建
+		time.Sleep(2 * time.Second)
+		
+		// 开始监控第一个模式的Pod
+		matchedNewPods := findMatchingPods(watchPatterns[0], namespace)
+		if len(matchedNewPods) > 0 {
+			watchSpecificPods(matchedNewPods, namespace)
+		} else {
+			fmt.Printf("⚠️  暂未找到重启后的Pod，请稍后手动检查\n")
+			fmt.Printf("💡 提示: 使用 'jj k8s %s -w' 监控Pod重启状态\n", watchPatterns[0])
 		}
 	}
 }
