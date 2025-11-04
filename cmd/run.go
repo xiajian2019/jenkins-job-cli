@@ -78,6 +78,12 @@ func init() {
 			env := jj.Init(ENV)
 			jobs := findMatchingJobs(env, args[0])
 
+			// 若首次匹配不到，强制刷新 Jenkins 视图缓存后重试
+			if len(jobs) == 0 {
+				jj.RefreshBundle(env)
+				jobs = findMatchingJobs(env, args[0])
+			}
+
 			if len(jobs) == 0 {
 				fmt.Printf("未找到匹配的任务: %s\n", args[0])
 				return

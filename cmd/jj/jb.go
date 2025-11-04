@@ -308,6 +308,14 @@ func updateCache(env Env, bundle *Bundle) {
 		fmt.Println("failed to Marshal cache info, ", err.Error())
 	}
 }
+
+// RefreshBundle 强制同步刷新指定环境的 Jenkins 视图和任务缓存
+// 用于在新增或变更 Jenkins 任务后，立即拿到最新的数据
+func RefreshBundle(env Env) {
+	// 同步刷新，避免异步刷新导致短时间内依旧使用旧缓存
+	fetchBundle(env, false)
+}
+
 func reqPOST(env Env, method, path string, body []byte) (int, []byte, map[string][]string, error) {
 	return req(env, method, path, body)
 }
