@@ -129,7 +129,7 @@ func showPodStatus(args []string, namespace, selector string, watch, showLogs, n
 			selectedPods = matchedPods
 		} else {
 			// 多个匹配，让用户选择
-			selectedPods = selectPodFromList(matchedPods, args[0])
+			selectedPods = selectPodFromList(matchedPods, args[0], watch)
 			if len(selectedPods) == 0 {
 				return // 用户取消选择
 			}
@@ -248,14 +248,19 @@ func findMatchingPods(pattern, namespace string) []string {
 }
 
 // 让用户从Pod列表中选择（支持多选）
-func selectPodFromList(pods []string, pattern string) []string {
+func selectPodFromList(pods []string, pattern string, selectAllOnEmpty bool) []string {
 	fmt.Printf("\n🔍 找到 %d 个匹配 '%s' 的Pod:\n", len(pods), pattern)
 	for i, pod := range pods {
 		fmt.Printf("%d. %s\n", i+1, pod)
 	}
 	fmt.Println() // 在提示符前添加一个空行，使界面更清晰
 
-	rl, err := readline.New("请选择要操作的Pod编号 (多个用逗号或空格分隔，如: 1,3,5 或 1 3 5 或 按Enter取消): ")
+	prompt := "请选择要操作的Pod编号 (多个用逗号或空格分隔，如: 1,3,5 或 1 3 5 或 按Enter取消): "
+	if selectAllOnEmpty {
+		prompt = "请选择要操作的Pod编号 (多个用逗号或空格分隔，如: 1,3,5 或 1 3 5 或 按Enter选择全部): "
+	}
+
+	rl, err := readline.New(prompt)
 	if err != nil {
 		fmt.Printf("读取输入失败: %v\n", err)
 		return nil
@@ -269,6 +274,10 @@ func selectPodFromList(pods []string, pattern string) []string {
 
 	line = strings.TrimSpace(line)
 	if line == "" {
+		if selectAllOnEmpty {
+			fmt.Printf("✅ 已选择全部Pod: %s\n\n", strings.Join(pods, ", "))
+			return append([]string(nil), pods...)
+		}
 		fmt.Println("已取消选择")
 		return nil
 	}
@@ -829,7 +838,7 @@ func restartPods(args []string, namespace string) {
 		selectedPods = matchedPods
 	} else {
 		// 多个匹配，让用户选择
-		selectedPods = selectPodFromList(matchedPods, args[0])
+		selectedPods = selectPodFromList(matchedPods, args[0], false)
 		if len(selectedPods) == 0 {
 			return // 用户取消选择
 		}
@@ -847,7 +856,7 @@ func restartPods(args []string, namespace string) {
 			continue
 		}
 		fmt.Printf("✅ Pod %s 重启成功\n", podName)
-		
+
 		// 提取Pod名称前缀（最后一个'-'之前的部分）用于watch
 		lastDashIndex := strings.LastIndex(podName, "-")
 		if lastDashIndex > 0 {
@@ -867,7 +876,7 @@ func restartPods(args []string, namespace string) {
 	}
 
 	fmt.Printf("\n🎉 重启完成！\n")
-	
+
 	// 自动开始watch重启后的Pod
 	if len(watchPatterns) > 0 {
 		fmt.Printf("\n👀 开始监控重启后的Pod状态...\n")
@@ -875,10 +884,10 @@ func restartPods(args []string, namespace string) {
 			fmt.Printf("🔍 监控模式: %s\n", pattern)
 		}
 		fmt.Printf("\n按 Ctrl+C 退出监控\n\n")
-		
+
 		// 等待一下让Pod有时间重新创建
 		time.Sleep(2 * time.Second)
-		
+
 		// 开始监控第一个模式的Pod
 		matchedNewPods := findMatchingPods(watchPatterns[0], namespace)
 		if len(matchedNewPods) > 0 {
