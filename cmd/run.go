@@ -62,6 +62,7 @@ var closeCh chan struct{}
 var stdinListener *jjStdin
 
 var verbose bool
+var interactive bool
 
 func init() {
 	var runCmd = &cobra.Command{
@@ -139,6 +140,7 @@ func init() {
 	runCmd.Flags().StringVarP(&ENV, "name", "n", "", "current Jenkins name")
 	// 添加 verbose 参数
 	runCmd.Flags().BoolVarP(&verbose, "verbose", "v", false, "显示详细的构建输出")
+	runCmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "交互式输入任务参数")
 	runCmd.SetUsageTemplate(usageTamplate)
 	rootCmd.AddCommand(runCmd)
 }
@@ -209,6 +211,17 @@ func askParams(params []jj.ParameterDefinitions) map[string]string {
 	return data
 }
 
+func paramsWithDefaults(params []jj.ParameterDefinitions, args arguments) map[string]string {
+	data := map[string]string{}
+	for _, pd := range params {
+		data[pd.Name] = pd.DefaultParameterValue.Value
+		if val, err := args.get(pd.Name); err == nil {
+			data[pd.Name] = val
+		}
+	}
+	return data
+}
+
 func runJob(name string) {
 	env := jj.Init(ENV)
 	time.Sleep(time.Millisecond * 200)
@@ -228,25 +241,10 @@ func runJob(name string) {
 	}
 	check(err)
 	params := jobInfo.GetParameterDefinitions()
-	if len(params) == 0 {
-		rl, err := readline.New("Press any key to continue: ")
-		defer rl.Close()
-		_, err = rl.Readline()
-		if err != nil {
-			os.Exit(1)
-		}
-	}
-	if len(inputArgs.args) > 0 {
-		for _, pd := range params {
-			val, err := inputArgs.get(pd.Name)
-			if err != nil {
-				data[pd.Name] = pd.DefaultParameterValue.Value
-			} else {
-				data[pd.Name] = val
-			}
-		}
-	} else {
+	if interactive {
 		data = askParams(params)
+	} else {
+		data = paramsWithDefaults(params, inputArgs)
 	}
 
 	urlquery := url.Values{}

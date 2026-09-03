@@ -68,6 +68,12 @@ jj set dev-jenkins
 # Start 'app-build' job in the current Jenkins
 jj run app-build
 
+# Use Jenkins' default parameter values; override parameters when needed
+jj run app-build -a key=value
+
+# Prompt for job parameters interactively when needed
+jj run app-build -i
+
 # Start 'web-build' job in Jenkins named prod
 jj run -n prod web-build
 
