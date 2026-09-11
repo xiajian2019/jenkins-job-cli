@@ -68,6 +68,9 @@ jj set dev-jenkins
 # Start 'app-build' job in the current Jenkins
 jj run app-build
 
+# Start multiple jobs in order; separate job names with commas
+jj run app-build,web-build
+
 # Use Jenkins' default parameter values; override parameters when needed
 jj run app-build -a key=value
 

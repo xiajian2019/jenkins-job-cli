@@ -66,7 +66,7 @@ var interactive bool
 
 func init() {
 	var runCmd = &cobra.Command{
-		Use:     "run JOB",
+		Use:     "run JOB[,JOB...]",
 		Aliases: []string{"r"},
 		Short:   "Run the specified jenkins job",
 		Run: func(cmd *cobra.Command, args []string) {
@@ -75,61 +75,25 @@ func init() {
 				return
 			}
 
-			// 获取匹配的任务列表
-			env := jj.Init(ENV)
-			jobs := findMatchingJobs(env, args[0])
-
-			// 若首次匹配不到，强制刷新 Jenkins 视图缓存后重试
-			if len(jobs) == 0 {
-				jj.RefreshBundle(env)
-				jobs = findMatchingJobs(env, args[0])
-			}
-
-			if len(jobs) == 0 {
-				fmt.Printf("未找到匹配的任务: %s\n", args[0])
+			patterns := splitJobPatterns(args[0])
+			if len(patterns) == 0 {
+				fmt.Println("请指定要运行的 Jenkins 任务名称")
 				return
 			}
 
-			// 如果完全匹配某个任务名称，直接运行该任务
-			for _, job := range jobs {
-				if job == args[0] {
-					runJob(job)
+			env := jj.Init(ENV)
+			jobs := make([]string, 0, len(patterns))
+			for _, pattern := range patterns {
+				job, ok := selectJob(env, pattern)
+				if !ok {
 					return
 				}
+				jobs = append(jobs, job)
 			}
 
-			// 如果只有一个匹配项，直接运行
-			if len(jobs) == 1 {
-				runJob(jobs[0])
-				return
+			for _, job := range jobs {
+				runJob(job)
 			}
-
-			// 多个匹配项，让用户选择
-			fmt.Printf("\n找到 %d 个匹配的任务:\n", len(jobs))
-			for i, job := range jobs {
-				fmt.Printf("%d. %s\n", i+1, job)
-			}
-
-			rl, err := readline.New("请选择要运行的任务编号: ")
-			if err != nil {
-				fmt.Printf("读取输入失败: %v\n", err)
-				return
-			}
-			defer rl.Close()
-
-			line, err := rl.Readline()
-			if err != nil {
-				fmt.Printf("读取输入失败: %v\n", err)
-				return
-			}
-
-			index, err := strconv.Atoi(strings.TrimSpace(line))
-			if err != nil || index < 1 || index > len(jobs) {
-				fmt.Println("无效的选择")
-				return
-			}
-
-			runJob(jobs[index-1])
 		},
 		Args:         cobra.MaximumNArgs(1),
 		PreRunE:      runPreRunE,
@@ -143,6 +107,76 @@ func init() {
 	runCmd.Flags().BoolVarP(&interactive, "interactive", "i", false, "交互式输入任务参数")
 	runCmd.SetUsageTemplate(usageTamplate)
 	rootCmd.AddCommand(runCmd)
+}
+
+// splitJobPatterns splits comma-separated job names and ignores whitespace and
+// empty entries so that values such as "app-build, web-build" are accepted.
+func splitJobPatterns(input string) []string {
+	parts := strings.Split(input, ",")
+	patterns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			patterns = append(patterns, part)
+		}
+	}
+	return patterns
+}
+
+// selectJob resolves one job pattern using the same matching behavior as the
+// original single-job implementation.
+func selectJob(env jj.Env, pattern string) (string, bool) {
+	jobs := findMatchingJobs(env, pattern)
+
+	// 若首次匹配不到，强制刷新 Jenkins 视图缓存后重试
+	if len(jobs) == 0 {
+		jj.RefreshBundle(env)
+		jobs = findMatchingJobs(env, pattern)
+	}
+
+	if len(jobs) == 0 {
+		fmt.Printf("未找到匹配的任务: %s\n", pattern)
+		return "", false
+	}
+
+	// 如果完全匹配某个任务名称，直接运行该任务
+	for _, job := range jobs {
+		if job == pattern {
+			return job, true
+		}
+	}
+
+	// 如果只有一个匹配项，直接运行
+	if len(jobs) == 1 {
+		return jobs[0], true
+	}
+
+	// 多个匹配项，让用户选择
+	fmt.Printf("\n找到 %d 个匹配的任务:\n", len(jobs))
+	for i, job := range jobs {
+		fmt.Printf("%d. %s\n", i+1, job)
+	}
+
+	rl, err := readline.New("请选择要运行的任务编号: ")
+	if err != nil {
+		fmt.Printf("读取输入失败: %v\n", err)
+		return "", false
+	}
+	defer rl.Close()
+
+	line, err := rl.Readline()
+	if err != nil {
+		fmt.Printf("读取输入失败: %v\n", err)
+		return "", false
+	}
+
+	index, err := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || index < 1 || index > len(jobs) {
+		fmt.Println("无效的选择")
+		return "", false
+	}
+
+	return jobs[index-1], true
 }
 
 func runPreRunE(cmd *cobra.Command, args []string) error {

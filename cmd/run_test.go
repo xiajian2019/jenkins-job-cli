@@ -41,3 +41,41 @@ func TestParamsWithDefaultsAllowsOverrides(t *testing.T) {
 		t.Fatalf("paramsWithDefaults() = %#v, want %#v", got, want)
 	}
 }
+
+func TestSplitJobPatterns(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  []string
+	}{
+		{
+			name:  "single job",
+			input: "app-build",
+			want:  []string{"app-build"},
+		},
+		{
+			name:  "multiple jobs",
+			input: "app-build,web-build",
+			want:  []string{"app-build", "web-build"},
+		},
+		{
+			name:  "trims whitespace and ignores empty entries",
+			input: " app-build, , web-build,",
+			want:  []string{"app-build", "web-build"},
+		},
+		{
+			name:  "empty input",
+			input: ",",
+			want:  []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitJobPatterns(tt.input)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("splitJobPatterns(%q) = %#v, want %#v", tt.input, got, tt.want)
+			}
+		})
+	}
+}

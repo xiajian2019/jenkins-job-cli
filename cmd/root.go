@@ -111,6 +111,9 @@ if this does not work for some reason, try calling "jj completion check" command
   # Start 'app-build' job in the current Jenkins
   jj run app-build
 
+  # Start multiple jobs in order
+  jj run app-build,web-build
+
   # Start 'web-build' job in Jenkins named prod
   jj run -n prod web-build
 
